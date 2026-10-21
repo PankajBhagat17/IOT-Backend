@@ -24,31 +24,40 @@ mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log('MongoDB Atlas Connected Successfully'))
   .catch(err => console.error('MongoDB connection error:', err));
 
-// Database Schema for Streetlight Telemetry
+// =========================================================
+// DATABASE SCHEMAS (Separating live stats from image history)
+// =========================================================
+
+// Schema 1: Continuous Sensor Data (Phase 2 Prep)
 const TelemetrySchema = new mongoose.Schema({
-  imageUrl: String,
-  ldrValue: Number,
-  motionDetected: Boolean,
+  ldrValue: { type: Number, default: 0 },
+  ledPowerPWM: { type: Number, default: 0 },
+  motionTriggers: { type: Number, default: 0 },
+  status: { type: String, default: "System Booting..." },
+  signalStrength: { type: Number, default: -100 },
   timestamp: { type: Date, default: Date.now }
 });
 const Telemetry = mongoose.model('Telemetry', TelemetrySchema);
 
+// Schema 2: Image Gallery History
+const CaptureSchema = new mongoose.Schema({
+  imageUrl: String,
+  triggerSource: { type: String, default: "PIR Sensor" },
+  timestamp: { type: Date, default: Date.now }
+});
+const Capture = mongoose.model('Capture', CaptureSchema);
+
 // Configure Multer to store the incoming image in memory temporarily
 const upload = multer({ storage: multer.memoryStorage() });
 
-// ---------------------------------------------------------
-// ROUTE 1: For the ESP32-CAM to POST data & images
-// ---------------------------------------------------------
+// =========================================================
+// ROUTE 1: ESP32-CAM Image Upload (Event-Driven)
+// =========================================================
 app.post('/upload', upload.single('imageFile'), (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: 'No image file received' });
   }
 
-  // Parse sensor data sent alongside the image
-  const ldrValue = req.body.ldr || 0;
-  const motionDetected = req.body.motion === 'true' || req.body.motion === '1';
-
-  // Upload the image buffer directly to Cloudinary
   const cld_upload_stream = cloudinary.uploader.upload_stream(
     { folder: 'lumen_iot_captures' },
     async (error, result) => {
@@ -57,17 +66,15 @@ app.post('/upload', upload.single('imageFile'), (req, res) => {
         return res.status(500).json({ error: 'Cloudinary upload failed' });
       }
 
-      // Save the Cloudinary URL and sensor data to MongoDB
+      // Save the image exclusively to the Capture gallery
       try {
-        const newData = new Telemetry({
-          imageUrl: result.secure_url,
-          ldrValue: ldrValue,
-          motionDetected: motionDetected
+        const newCapture = new Capture({
+          imageUrl: result.secure_url
         });
-        await newData.save();
+        await newCapture.save();
         
-        console.log('New telemetry saved:', newData._id);
-        res.status(200).json({ message: 'Upload successful', data: newData });
+        console.log('New image saved to gallery:', newCapture._id);
+        res.status(200).json({ message: 'Upload successful', data: newCapture });
       } catch (dbError) {
         console.error('Database Error:', dbError);
         res.status(500).json({ error: 'Failed to save to database' });
@@ -75,31 +82,66 @@ app.post('/upload', upload.single('imageFile'), (req, res) => {
     }
   );
 
-  // Convert the memory buffer into a stream for Cloudinary
   streamifier.createReadStream(req.file.buffer).pipe(cld_upload_stream);
 });
 
-// ---------------------------------------------------------
-// ROUTE 2: For the React Dashboard to GET the latest data
-// ---------------------------------------------------------
-app.get('/api/latest-data', async (req, res) => {
+// =========================================================
+// ROUTE 2: Standard ESP32 Live Telemetry (Continuous Update)
+// =========================================================
+app.post('/telemetry', async (req, res) => {
   try {
-    // Find the single most recent entry based on timestamp
-    const latestData = await Telemetry.findOne().sort({ timestamp: -1 });
+    // This will overwrite/log the continuous state from the main ESP32
+    const newTelemetry = new Telemetry({
+      ldrValue: req.body.ldrValue,
+      ledPowerPWM: req.body.ledPowerPWM,
+      motionTriggers: req.body.motionTriggers,
+      status: req.body.status,
+      signalStrength: req.body.signalStrength
+    });
     
-    if (!latestData) {
-      return res.status(404).json({ message: 'No telemetry data found yet' });
-    }
-    
-    res.json(latestData);
+    await newTelemetry.save();
+    res.status(200).json({ message: 'Telemetry updated' });
   } catch (error) {
-    res.status(500).json({ error: 'Failed to fetch data' });
+    console.error('Telemetry Error:', error);
+    res.status(500).json({ error: 'Failed to save telemetry' });
+  }
+});
+
+// =========================================================
+// ROUTE 3: React Dashboard Aggregator
+// =========================================================
+app.get('/api/dashboard', async (req, res) => {
+  try {
+    // 1. Get the single most recent continuous telemetry reading
+    const latestTelemetry = await Telemetry.findOne().sort({ timestamp: -1 });
+    
+    // 2. Get the 10 most recent images for the gallery
+    const recentCaptures = await Capture.find().sort({ timestamp: -1 }).limit(10);
+    
+    // 3. Package them together for the React frontend
+    res.json({
+      telemetry: latestTelemetry || {
+        ldrValue: 0,
+        ledPowerPWM: 0,
+        motionTriggers: 0,
+        status: "Waiting for ESP32 connection...",
+        signalStrength: 0
+      },
+      imageGallery: recentCaptures.map(cap => ({
+        url: cap.imageUrl,
+        timestamp: cap.timestamp
+      })),
+      liveStreamUrl: "http://10.168.180.191:81/stream" // Reserved for Phase 3
+    });
+  } catch (error) {
+    console.error('Dashboard API Error:', error);
+    res.status(500).json({ error: 'Failed to fetch dashboard data' });
   }
 });
 
 // Basic health check route
 app.get('/', (req, res) => {
-  res.send('LUMEN IoT Backend is running natively.');
+  res.send('LUMEN IoT Backend is running with Continuous Telemetry.');
 });
 
 // Start Server
