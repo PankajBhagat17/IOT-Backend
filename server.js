@@ -9,7 +9,7 @@ const streamifier = require('streamifier');
 const app = express();
 
 // Middleware
-app.use(cors()); // Allows your React frontend to fetch data
+app.use(cors()); 
 app.use(express.json());
 
 // Cloudinary Configuration
@@ -25,10 +25,10 @@ mongoose.connect(process.env.MONGO_URI)
   .catch(err => console.error('MongoDB connection error:', err));
 
 // =========================================================
-// DATABASE SCHEMAS (Separating live stats from image history)
+// DATABASE SCHEMAS
 // =========================================================
 
-// Schema 1: Continuous Sensor Data (Phase 2 Prep)
+// Schema 1: Continuous Sensor Data
 const TelemetrySchema = new mongoose.Schema({
   ldrValue: { type: Number, default: 0 },
   ledPowerPWM: { type: Number, default: 0 },
@@ -47,11 +47,10 @@ const CaptureSchema = new mongoose.Schema({
 });
 const Capture = mongoose.model('Capture', CaptureSchema);
 
-// Configure Multer to store the incoming image in memory temporarily
 const upload = multer({ storage: multer.memoryStorage() });
 
 // =========================================================
-// ROUTE 1: ESP32-CAM Image Upload (Event-Driven)
+// ROUTE 1: ESP32-CAM Image Upload
 // =========================================================
 app.post('/upload', upload.single('imageFile'), (req, res) => {
   if (!req.file) {
@@ -66,7 +65,6 @@ app.post('/upload', upload.single('imageFile'), (req, res) => {
         return res.status(500).json({ error: 'Cloudinary upload failed' });
       }
 
-      // Save the image exclusively to the Capture gallery
       try {
         const newCapture = new Capture({
           imageUrl: result.secure_url
@@ -86,11 +84,10 @@ app.post('/upload', upload.single('imageFile'), (req, res) => {
 });
 
 // =========================================================
-// ROUTE 2: Standard ESP32 Live Telemetry (Continuous Update)
+// ROUTE 2: Standard ESP32 Live Telemetry
 // =========================================================
 app.post('/telemetry', async (req, res) => {
   try {
-    // This will overwrite/log the continuous state from the main ESP32
     const newTelemetry = new Telemetry({
       ldrValue: req.body.ldrValue,
       ledPowerPWM: req.body.ledPowerPWM,
@@ -112,13 +109,18 @@ app.post('/telemetry', async (req, res) => {
 // =========================================================
 app.get('/api/dashboard', async (req, res) => {
   try {
-    // 1. Get the single most recent continuous telemetry reading
     const latestTelemetry = await Telemetry.findOne().sort({ timestamp: -1 });
-    
-    // 2. Get the 10 most recent images for the gallery
     const recentCaptures = await Capture.find().sort({ timestamp: -1 }).limit(10);
     
-    // 3. Package them together for the React frontend
+    // NEW: Fetch the last 20 telemetry readings for the chart
+    const rawHistory = await Telemetry.find().sort({ timestamp: -1 }).limit(20);
+    
+    // Reverse so oldest is on the left, newest on the right
+    const telemetryHistory = rawHistory.reverse().map(doc => ({
+      time: doc.timestamp,
+      lux: doc.ldrValue
+    }));
+    
     res.json({
       telemetry: latestTelemetry || {
         ldrValue: 0,
@@ -127,11 +129,12 @@ app.get('/api/dashboard', async (req, res) => {
         status: "Waiting for ESP32 connection...",
         signalStrength: 0
       },
+      telemetryHistory: telemetryHistory,
       imageGallery: recentCaptures.map(cap => ({
         url: cap.imageUrl,
         timestamp: cap.timestamp
       })),
-      liveStreamUrl: "http://10.168.180.191:81/stream" // Reserved for Phase 3
+      liveStreamUrl: "http://10.168.180.191:81/stream"
     });
   } catch (error) {
     console.error('Dashboard API Error:', error);
@@ -139,12 +142,10 @@ app.get('/api/dashboard', async (req, res) => {
   }
 });
 
-// Basic health check route
 app.get('/', (req, res) => {
   res.send('LUMEN IoT Backend is running with Continuous Telemetry.');
 });
 
-// Start Server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
