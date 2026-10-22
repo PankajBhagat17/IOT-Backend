@@ -110,10 +110,10 @@ app.post('/telemetry', async (req, res) => {
 app.get('/api/dashboard', async (req, res) => {
   try {
     const latestTelemetry = await Telemetry.findOne().sort({ timestamp: -1 });
-    const recentCaptures = await Capture.find().sort({ timestamp: -1 }).limit(200);
+    const recentCaptures = await Capture.find().sort({ timestamp: -1 }).limit(500);
     
     // NEW: Fetch the last 20 telemetry readings for the chart
-    const rawHistory = await Telemetry.find().sort({ timestamp: -1 }).limit(20);
+    const rawHistory = await Telemetry.find().sort({ timestamp: -1 }).limit(50);
     
     // Reverse so oldest is on the left, newest on the right
     const telemetryHistory = rawHistory.reverse().map(doc => ({
