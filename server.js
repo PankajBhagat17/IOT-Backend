@@ -134,7 +134,7 @@ app.get('/api/dashboard', async (req, res) => {
         url: cap.imageUrl,
         timestamp: cap.timestamp
       })),
-      liveStreamUrl: "http://10.168.180.192:81/stream"
+      liveStreamUrl: "http://10.168.180.191:81/stream"
     });
   } catch (error) {
     console.error('Dashboard API Error:', error);
